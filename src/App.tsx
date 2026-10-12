@@ -1,8 +1,9 @@
 import React, { useRef, useState } from 'react';
 import { MicroscopeState, OrganelleInfo } from './state/microscopeState';
-import { useMicroscopeLoop } from './rendering/useMicroscopeLoop';
+import { useMultiCellLoop } from './rendering/useMultiCellLoop';
 import { CellProcessManager } from './core/processes/secretoryPathway';
 import { BIOLOGICAL_DATABASE, BiologicalMetadataDetailed } from './core/biology/biologicalData';
+import { StudyNavigationPanel } from './components/StudyNavigationPanel';
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -16,8 +17,18 @@ export function App() {
 
   const [selectedOrganelle, setSelectedOrganelle] = useState<OrganelleInfo | null>(null);
   const [organelleBio, setOrganelleBio] = useState<BiologicalMetadataDetailed | null>(null);
+  const [selectedCellType, setSelectedCellType] = useState<'animal' | 'plant' | 'bacterial'>('animal');
+  const [selectedPlantStructure, setSelectedPlantStructure] = useState<string | null>(null);
   const [processManager] = useState(() => new CellProcessManager());
   const [processStateVersion, setProcessStateVersion] = useState(0);
+
+  // Menu sliding panel state
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [menuActiveTab, setMenuActiveTab] = useState<'cytology' | 'histology'>('cytology');
+  const [menuSelectedCategory, setMenuSelectedCategory] = useState<'eukaryotes' | 'prokaryotes' | null>(null);
+
+  // Real speed mode (🔬) state
+  const [isRealSpeedMode, setIsRealSpeedMode] = useState(false);
 
   const processRef = useRef(processManager.secretoryPathway);
   processRef.current = processManager.secretoryPathway;
@@ -75,13 +86,19 @@ export function App() {
     touchStartDist.current = null;
   };
 
-  const { simulationRef } = useMicroscopeLoop(canvasRef, microscopeState, processRef);
+  const { simulationRef, plantRendererRef } = useMultiCellLoop(
+    canvasRef,
+    microscopeState,
+    processRef,
+    selectedCellType,
+    selectedPlantStructure
+  );
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     isDragging.current = true;
     lastMousePos.current = { x: e.clientX, y: e.clientY };
 
-    if (!canvasRef.current || !simulationRef.current) return;
+    if (!canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
@@ -92,11 +109,34 @@ export function App() {
     const worldX = (clickX - width / 2 - microscopeState.panX) / microscopeState.zoom + width / 2;
     const worldY = (clickY - height / 2 - microscopeState.panY) / microscopeState.zoom + height / 2;
 
+    if (selectedCellType === 'plant' && plantRendererRef.current) {
+      const clickedStructId = plantRendererRef.current.getStructureAt(worldX, worldY, width, height);
+      if (clickedStructId) {
+        setSelectedPlantStructure(clickedStructId);
+        if (BIOLOGICAL_DATABASE[clickedStructId]) {
+          setOrganelleBio(BIOLOGICAL_DATABASE[clickedStructId]);
+          setSelectedOrganelle({
+            id: clickedStructId,
+            type: 'cytoplasm',
+            name: BIOLOGICAL_DATABASE[clickedStructId].name,
+            description: BIOLOGICAL_DATABASE[clickedStructId].function,
+            x: worldX,
+            y: worldY,
+            radius: 30
+          });
+        }
+        return;
+      }
+    }
+
+    if (!simulationRef.current) return;
     const organelle = simulationRef.current.getOrganelleAt(worldX, worldY);
     setSelectedOrganelle(organelle);
 
     if (organelle && BIOLOGICAL_DATABASE[organelle.id]) {
       setOrganelleBio(BIOLOGICAL_DATABASE[organelle.id]);
+    } else if (organelle && organelle.id.startsWith('nuclearPore')) {
+      setOrganelleBio(BIOLOGICAL_DATABASE['nucleus']);
     } else {
       setOrganelleBio(null);
     }
@@ -210,8 +250,53 @@ export function App() {
   const pathway = processManager.secretoryPathway;
 
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw', background: '#050811', fontFamily: 'sans-serif', overflow: 'hidden' }}>
-      {/* Main Microscope Viewport - Massive Area */}
+    <div style={{ display: 'flex', height: '100vh', width: '100vw', background: '#FAF8F3', fontFamily: 'sans-serif', overflow: 'hidden' }}>
+      {/* Top-Right Menu Button */}
+      <button
+        onClick={() => setIsMenuOpen(true)}
+        style={{
+          position: 'fixed',
+          top: 16,
+          right: 380,
+          background: 'rgba(255, 255, 255, 0.9)',
+          backdropFilter: 'blur(8px)',
+          border: '1px solid #cbd5e1',
+          borderRadius: '8px',
+          padding: '8px 16px',
+          fontSize: '13px',
+          fontWeight: '600',
+          color: '#0f172a',
+          cursor: 'pointer',
+          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)',
+          zIndex: 20
+        }}
+      >
+        ☰ Меню
+      </button>
+
+      {/* Sliding Menu Panel */}
+      <StudyNavigationPanel
+        isOpen={isMenuOpen}
+        onClose={() => setIsMenuOpen(false)}
+        onFocusOrganelle={handleFocusOrganelle}
+        selectedCellType={selectedCellType}
+        onSelectCellType={setSelectedCellType}
+        selectedPlantStructure={selectedPlantStructure}
+        onSelectPlantStructure={(structId) => {
+          setSelectedPlantStructure(structId);
+          if (structId && BIOLOGICAL_DATABASE[structId]) {
+            setOrganelleBio(BIOLOGICAL_DATABASE[structId]);
+          } else if (!structId) {
+            setOrganelleBio(null);
+          }
+        }}
+        activeTab={menuActiveTab}
+        setActiveTab={setMenuActiveTab}
+        selectedCategory={menuSelectedCategory}
+        setSelectedCategory={setMenuSelectedCategory}
+      />
+
+      {/* Main Microscope Viewport */}
       <div style={{ flex: 1, position: 'relative', height: '100%' }}>
         <canvas
           ref={canvasRef}
@@ -231,15 +316,15 @@ export function App() {
           bottom: 16,
           left: '50%',
           transform: 'translateX(-50%)',
-          background: 'rgba(10, 15, 30, 0.75)',
+          background: 'rgba(255, 255, 255, 0.85)',
           backdropFilter: 'blur(12px)',
-          border: '1px solid rgba(255, 255, 255, 0.08)',
+          border: '1px solid #cbd5e1',
           padding: '8px 16px',
           borderRadius: '24px',
           display: 'flex',
           gap: '16px',
           alignItems: 'center',
-          boxShadow: '0 10px 30px rgba(0, 0, 0, 0.6)',
+          boxShadow: '0 10px 30px rgba(0, 0, 0, 0.1)',
           zIndex: 10
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -251,34 +336,34 @@ export function App() {
               step="0.05"
               value={microscopeState.focusZ}
               onChange={e => setMicroscopeState(prev => ({ ...prev, focusZ: parseFloat(e.target.value) }))}
-              style={{ width: '90px', cursor: 'pointer', accentColor: '#38bdf8' }}
+              style={{ width: '90px', cursor: 'pointer', accentColor: '#0284c7' }}
             />
           </div>
 
-          <div style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.1)' }} />
+          <div style={{ width: '1px', height: '20px', background: '#cbd5e1' }} />
 
-          <div style={{ display: 'flex', gap: '4px' }}>
-            {[1, 2, 3, 4].map(zLevel => (
-              <button
-                key={zLevel}
-                onClick={() => setMicroscopeState(prev => ({ ...prev, zoom: zLevel * 0.8 }))}
-                style={{
-                  background: microscopeState.zoom === zLevel * 0.8 ? '#38bdf8' : 'rgba(255,255,255,0.05)',
-                  color: microscopeState.zoom === zLevel * 0.8 ? '#0f172a' : '#94a3b8',
-                  border: '1px solid rgba(255, 255, 255, 0.08)',
-                  borderRadius: '12px',
-                  padding: '3px 10px',
-                  fontSize: '10px',
-                  cursor: 'pointer',
-                  fontWeight: '600'
-                }}
-              >
-                {zLevel === 1 ? 'Обзор' : zLevel === 2 ? 'Органелла' : zLevel === 3 ? 'Процесс' : 'Деталь'}
-              </button>
-            ))}
-          </div>
+          {/* Real Speed Mode Toggle 🔬 */}
+          <button
+            onClick={() => setIsRealSpeedMode(!isRealSpeedMode)}
+            style={{
+              background: isRealSpeedMode ? '#d97706' : 'rgba(0,0,0,0.05)',
+              color: isRealSpeedMode ? '#ffffff' : '#334155',
+              border: '1px solid #cbd5e1',
+              borderRadius: '12px',
+              padding: '4px 12px',
+              fontSize: '11px',
+              cursor: 'pointer',
+              fontWeight: '600',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            title="Переключение между учебной анимацией и реальными временными масштабами"
+          >
+            🔬 Реальная скорость: {isRealSpeedMode ? 'ВКЛ (дни/часы)' : 'Учебная (секунды)'}
+          </button>
 
-          <div style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.1)' }} />
+          <div style={{ width: '1px', height: '20px', background: '#cbd5e1' }} />
 
           <div style={{ display: 'flex', gap: '4px' }}>
             {(['normal', 'fluorescence', 'membrane'] as const).map(mode => (
@@ -286,9 +371,9 @@ export function App() {
                 key={mode}
                 onClick={() => setMicroscopeState(prev => ({ ...prev, stainMode: mode }))}
                 style={{
-                  background: microscopeState.stainMode === mode ? '#38bdf8' : 'rgba(255,255,255,0.05)',
-                  color: microscopeState.stainMode === mode ? '#0f172a' : '#94a3b8',
-                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  background: microscopeState.stainMode === mode ? '#0284c7' : 'rgba(0,0,0,0.05)',
+                  color: microscopeState.stainMode === mode ? '#ffffff' : '#475569',
+                  border: '1px solid #cbd5e1',
                   borderRadius: '12px',
                   padding: '3px 10px',
                   fontSize: '10px',
@@ -303,163 +388,173 @@ export function App() {
         </div>
       </div>
 
-      {/* Floating Semi-Transparent Collapsible Overlay Sidebar (Not Cards+Cards Grid) */}
+      {/* Right Panel: Organelles, Names, Information & Process */}
       <div style={{
         width: '360px',
-        background: 'rgba(11, 17, 32, 0.85)',
-        backdropFilter: 'blur(16px)',
-        borderLeft: '1px solid rgba(255, 255, 255, 0.06)',
+        background: '#ffffff',
+        borderLeft: '1px solid #e2e8f0',
         padding: '20px',
         display: 'flex',
         flexDirection: 'column',
         gap: '16px',
         boxSizing: 'border-box',
         overflowY: 'auto',
-        zIndex: 10
+        zIndex: 10,
+        boxShadow: '-4px 0 20px rgba(0,0,0,0.04)'
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '10px' }}>
-          <h2 style={{ margin: 0, fontSize: '15px', color: '#f8fafc', fontWeight: '500', letterSpacing: '0.02em' }}>
-            Микроскоп • Клетка
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', paddingBottom: '10px' }}>
+          <h2 style={{ margin: 0, fontSize: '15px', color: '#0f172a', fontWeight: '600', letterSpacing: '0.02em' }}>
+            Органоиды и процессы
           </h2>
           <div style={{ display: 'flex', gap: '4px' }}>
-            <button onClick={() => handleFocusOrganelle('nucleus')} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#38bdf8', padding: '3px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}>Ядро</button>
-            <button onClick={() => handleFocusOrganelle('mitochondrion')} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#38bdf8', padding: '3px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}>Митох</button>
-            <button onClick={() => handleFocusOrganelle('golgi')} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#38bdf8', padding: '3px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}>Гольджи</button>
+            <button onClick={() => handleFocusOrganelle('nucleus')} style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', color: '#0284c7', padding: '3px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>Ядро</button>
+            <button onClick={() => handleFocusOrganelle('mitochondrion')} style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', color: '#0284c7', padding: '3px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>Митох</button>
+            <button onClick={() => handleFocusOrganelle('golgi')} style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', color: '#0284c7', padding: '3px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}>Гольджи</button>
           </div>
         </div>
 
         {organelleBio ? (
-          <div style={{ background: 'rgba(20, 30, 50, 0.6)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(56, 189, 248, 0.2)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '8px', border: '1px solid #cbd5e1', display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
-                <span style={{ fontSize: '9px', textTransform: 'uppercase', color: '#38bdf8', fontWeight: '600', letterSpacing: '0.05em' }}>
+                <span style={{ fontSize: '9px', textTransform: 'uppercase', color: '#0284c7', fontWeight: '700', letterSpacing: '0.05em' }}>
                   {organelleBio.latinName}
                 </span>
-                <h3 style={{ margin: '2px 0 0 0', fontSize: '15px', color: '#f8fafc' }}>
+                <h3 style={{ margin: '2px 0 0 0', fontSize: '15px', color: '#0f172a', fontWeight: '600' }}>
                   {organelleBio.name}
                 </h3>
               </div>
               <button
                 onClick={() => handleFocusOrganelle(organelleBio.id)}
-                style={{ background: '#0284c7', color: '#fff', border: 'none', padding: '3px 6px', borderRadius: '4px', fontSize: '9px', cursor: 'pointer' }}
+                style={{ background: '#0284c7', color: '#fff', border: 'none', padding: '3px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}
               >
                 Фокус
               </button>
             </div>
 
-            <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.3' }}>
-              <strong style={{ color: '#38bdf8' }}>Строение:</strong> {organelleBio.structure}
+            <div style={{ fontSize: '11px', color: '#334155', lineHeight: '1.4' }}>
+              <strong style={{ color: '#0284c7' }}>Строение:</strong> {organelleBio.structure}
             </div>
 
-            <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.3' }}>
-              <strong style={{ color: '#38bdf8' }}>Функция:</strong> {organelleBio.function}
+            <div style={{ fontSize: '11px', color: '#334155', lineHeight: '1.4' }}>
+              <strong style={{ color: '#0284c7' }}>Функция:</strong> {organelleBio.function}
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '10px', background: 'rgba(10, 15, 30, 0.5)', padding: '6px', borderRadius: '4px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '10px', background: '#ffffff', padding: '8px', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
               <div>
-                <span style={{ color: '#38bdf8', fontWeight: '600' }}>Вход:</span>
-                <ul style={{ margin: '1px 0 0 12px', padding: 0, color: '#94a3b8' }}>
+                <span style={{ color: '#0284c7', fontWeight: '700' }}>Вход:</span>
+                <ul style={{ margin: '2px 0 0 12px', padding: 0, color: '#475569' }}>
                   {organelleBio.incomingSubstances.map((sub, i) => <li key={i}>{sub}</li>)}
                 </ul>
               </div>
               <div>
-                <span style={{ color: '#38bdf8', fontWeight: '600' }}>Выход:</span>
-                <ul style={{ margin: '1px 0 0 12px', padding: 0, color: '#94a3b8' }}>
+                <span style={{ color: '#0284c7', fontWeight: '700' }}>Выход:</span>
+                <ul style={{ margin: '2px 0 0 12px', padding: 0, color: '#475569' }}>
                   {organelleBio.outgoingSubstances.map((sub, i) => <li key={i}>{sub}</li>)}
                 </ul>
               </div>
             </div>
 
             {organelleBio.protectiveMechanism ? (
-              <div style={{ fontSize: '10px', color: '#fca5a5', background: 'rgba(239, 68, 68, 0.08)', padding: '5px', borderRadius: '4px' }}>
+              <div style={{ fontSize: '10px', color: '#b91c1c', background: '#fef2f2', padding: '6px', borderRadius: '6px', border: '1px solid #fecaca' }}>
                 <strong style={{ display: 'block', marginBottom: '1px' }}>Защита:</strong>
                 {organelleBio.protectiveMechanism}
               </div>
             ) : null}
           </div>
         ) : (
-          <div style={{ color: '#64748b', fontSize: '12px', fontStyle: 'italic', background: 'rgba(15, 23, 42, 0.4)', padding: '12px', borderRadius: '6px', border: '1px dashed rgba(255,255,255,0.05)' }}>
-            Нажмите на любую органеллу прямо внутри клетки под микроскопом для детального изучения.
+          <div style={{ color: '#64748b', fontSize: '12px', fontStyle: 'italic', background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px dashed #cbd5e1' }}>
+            💡 Нажмите на клетку или органоид (ядро, митохондрии, аппарат Гольджи и др.) под микроскопом, чтобы узнать детальную биологическую информацию и происходящий процесс.
           </div>
         )}
 
-        {/* Secretory Pathway Process Simulation Panel */}
-        <div style={{ background: 'rgba(15, 23, 42, 0.5)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {/* Process Simulation Panel: Play / Pause */}
+        <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '8px', border: '1px solid #cbd5e1', display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h3 style={{ margin: 0, fontSize: '13px', color: '#38bdf8', fontWeight: '500' }}>Режим «Что происходит?»</h3>
-            <span style={{ fontSize: '10px', color: '#64748b' }}>Шаг {Math.min(pathway.currentStepIndex + 1, pathway.steps.length)} / {pathway.steps.length}</span>
+            <h3 style={{ margin: 0, fontSize: '13px', color: '#0284c7', fontWeight: '600' }}>Режим «Что происходит?»</h3>
+            <span style={{ fontSize: '10px', color: '#64748b', fontWeight: '600' }}>Шаг {Math.min(pathway.currentStepIndex + 1, pathway.steps.length)} / {pathway.steps.length}</span>
           </div>
 
+          {isRealSpeedMode ? (
+            <div style={{ fontSize: '11px', color: '#9a3412', background: '#ffedd5', padding: '8px', borderRadius: '6px', border: '1px solid #fed7aa', lineHeight: '1.4' }}>
+              ⏳ <strong>Режим «Реальная скорость» (🔬):</strong> Биологические процессы в живой клетке протекают в естественных временных масштабах (транскрипция ДНК занимает минуты, синтез белка — часы, клеточный деления — сутки). Ускоренная учебная анимация выше приведена для наглядности и не выдается за реальное время.
+            </div>
+          ) : null}
+
           {pathway.currentStepIndex < pathway.steps.length ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-              <h4 style={{ margin: 0, fontSize: '12px', color: '#f8fafc', fontWeight: '600' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <h4 style={{ margin: 0, fontSize: '12px', color: '#0f172a', fontWeight: '700' }}>
                 {pathway.steps[pathway.currentStepIndex].title}
               </h4>
-              <p style={{ fontSize: '10px', color: '#cbd5e1', margin: 0, lineHeight: '1.3' }}>
+              <p style={{ fontSize: '11px', color: '#334155', margin: 0, lineHeight: '1.4' }}>
                 {pathway.steps[pathway.currentStepIndex].description}
               </p>
               
-              <div style={{ fontSize: '10px', color: '#38bdf8', background: 'rgba(10, 15, 30, 0.6)', padding: '6px', borderRadius: '4px', borderLeft: '2px solid #38bdf8' }}>
+              <div style={{ fontSize: '11px', color: '#0369a1', background: '#e0f2fe', padding: '8px', borderRadius: '6px', borderLeft: '3px solid #0284c7', lineHeight: '1.4' }}>
                 {pathway.steps[pathway.currentStepIndex].whatHappensText}
               </div>
             </div>
           ) : (
-            <div style={{ fontSize: '11px', color: '#4ade80', fontWeight: 'bold', padding: '6px', background: 'rgba(74, 222, 128, 0.08)', borderRadius: '4px' }}>
-              ✓ Экзоцитоз завершен. Процесс выполнен внутри сцены.
+            <div style={{ fontSize: '11px', color: '#15803d', fontWeight: 'bold', padding: '8px', background: '#dcfce7', borderRadius: '6px', border: '1px solid #bbf7d0' }}>
+              ✓ Экзоцитоз завершен. Процесс успешно выполнен внутри сцены.
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: '6px', marginTop: '4px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '4px', flexWrap: 'wrap' }}>
             <button
               onClick={handlePlay}
               style={{
-                background: pathway.state === 'playing' ? '#f59e0b' : '#38bdf8',
-                color: '#0f172a',
+                background: pathway.state === 'playing' ? '#d97706' : '#0284c7',
+                color: '#ffffff',
                 border: 'none',
-                padding: '5px 12px',
-                borderRadius: '4px',
-                fontSize: '11px',
+                padding: '8px 14px',
+                borderRadius: '6px',
+                fontSize: '12px',
                 fontWeight: 'bold',
                 cursor: 'pointer',
-                flex: 1
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px'
               }}
             >
-              {pathway.state === 'playing' ? 'Pause' : 'Play'}
+              {pathway.state === 'playing' ? '⏸ Пауза' : '▶️ Запустить'}
             </button>
 
             <button
               onClick={handleNextStep}
               style={{
-                background: 'rgba(56, 189, 248, 0.15)',
-                color: '#38bdf8',
-                border: '1px solid rgba(56, 189, 248, 0.3)',
-                padding: '5px 10px',
-                borderRadius: '4px',
-                fontSize: '11px',
-                fontWeight: 'bold',
+                background: '#e2e8f0',
+                color: '#0f172a',
+                border: '1px solid #cbd5e1',
+                padding: '8px 12px',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontWeight: '600',
                 cursor: 'pointer'
               }}
             >
-              Step
+              Шаг ⏭
             </button>
 
             <button
               onClick={handleResetProcess}
               style={{
-                background: 'rgba(255,255,255,0.06)',
-                color: '#94a3b8',
-                border: 'none',
-                padding: '5px 10px',
-                borderRadius: '4px',
-                fontSize: '11px',
+                background: '#f1f5f9',
+                color: '#475569',
+                border: '1px solid #cbd5e1',
+                padding: '8px 10px',
+                borderRadius: '6px',
+                fontSize: '12px',
                 cursor: 'pointer'
               }}
             >
-              Replay
+              Сброс
             </button>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '10px', color: '#94a3b8', marginTop: '2px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
             <span>Скорость: {pathway.speed}x</span>
             <div style={{ display: 'flex', gap: '4px' }}>
               {[0.25, 0.5, 1.0, 2.0].map(sp => (
@@ -467,13 +562,14 @@ export function App() {
                   key={sp}
                   onClick={() => { processManager.setSpeed(sp); setProcessStateVersion(v => v + 1); }}
                   style={{
-                    background: pathway.speed === sp ? '#38bdf8' : 'rgba(255,255,255,0.05)',
-                    color: pathway.speed === sp ? '#0f172a' : '#94a3b8',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    borderRadius: '3px',
-                    padding: '2px 6px',
-                    fontSize: '9px',
-                    cursor: 'pointer'
+                    background: pathway.speed === sp ? '#0284c7' : '#ffffff',
+                    color: pathway.speed === sp ? '#ffffff' : '#334155',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '4px',
+                    padding: '3px 8px',
+                    fontSize: '10px',
+                    cursor: 'pointer',
+                    fontWeight: '600'
                   }}
                 >
                   {sp}×
@@ -483,12 +579,13 @@ export function App() {
           </div>
         </div>
 
-        <div style={{ marginTop: 'auto', background: 'rgba(10, 15, 30, 0.3)', padding: '10px', borderRadius: '6px', fontSize: '10px', color: '#64748b', lineHeight: '1.4' }}>
+        <div style={{ marginTop: 'auto', background: '#f8fafc', padding: '10px', borderRadius: '8px', fontSize: '10px', color: '#64748b', lineHeight: '1.4', border: '1px solid #e2e8f0' }}>
           • Навигация: ЛКМ тянуть, Колесико зум<br/>
-          • Клетка живая: наблюдайте движение везикул и цитоплазмы.
+          • Клетка живая: наблюдайте синтез мРНК, везикулы и органеллы.
         </div>
       </div>
     </div>
   );
 }
 export default App;
+
