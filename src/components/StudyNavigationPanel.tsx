@@ -61,6 +61,7 @@ export const StudyNavigationPanel: React.FC<StudyNavigationPanelProps> = ({
         top: 0,
         left: 0,
         width: '340px',
+        maxWidth: '85vw',
         height: '100vh',
         background: '#FAF8F3',
         color: '#1e293b',

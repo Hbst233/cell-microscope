@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { useGesture } from '@use-gesture/react';
 import { MicroscopeState, OrganelleInfo } from './state/microscopeState';
 import { useMultiCellLoop } from './rendering/useMultiCellLoop';
 import { CellProcessManager } from './core/processes/secretoryPathway';
@@ -34,57 +35,8 @@ export function App() {
   processRef.current = processManager.secretoryPathway;
 
   // Dragging state for pan & touch
-  const isDragging = useRef(false);
-  const lastMousePos = useRef({ x: 0, y: 0 });
-
-  // Touch interaction refs for pinch zoom and drag pan
-  const touchStartDist = useRef<number | null>(null);
-  const initialZoom = useRef(1.5);
-  const lastTouchPos = useRef({ x: 0, y: 0 });
-
-  const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    if (e.touches.length === 1) {
-      isDragging.current = true;
-      lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-    } else if (e.touches.length === 2) {
-      isDragging.current = false;
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      touchStartDist.current = Math.sqrt(dx * dx + dy * dy);
-      initialZoom.current = microscopeState.zoom;
-    }
-  };
-
-  const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    if (e.touches.length === 1 && isDragging.current) {
-      const dx = e.touches[0].clientX - lastTouchPos.current.x;
-      const dy = e.touches[0].clientY - lastTouchPos.current.y;
-      lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-
-      setMicroscopeState(prev => ({
-        ...prev,
-        panX: prev.panX + dx,
-        panY: prev.panY + dy
-      }));
-    } else if (e.touches.length === 2 && touchStartDist.current !== null) {
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      const currentDist = Math.sqrt(dx * dx + dy * dy);
-      const scale = currentDist / touchStartDist.current;
-      const newZoom = Math.min(Math.max(initialZoom.current * scale, 1.0), 4.5);
-
-      setMicroscopeState(prev => ({
-        ...prev,
-        zoom: newZoom
-      }));
-    }
-  };
-
-  const handleTouchEnd = () => {
-    isDragging.current = false;
-    touchStartDist.current = null;
-  };
+  const panStartRef = useRef({ x: 0, y: 0 });
+  const pinchStartZoomRef = useRef(1.5);
 
   const { simulationRef, plantRendererRef } = useMultiCellLoop(
     canvasRef,
@@ -94,79 +46,136 @@ export function App() {
     selectedPlantStructure
   );
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    isDragging.current = true;
-    lastMousePos.current = { x: e.clientX, y: e.clientY };
+  // UseGesture hook for robust pinch-to-zoom, pan, wheel, and click/tap selection across Android, iPhone, iPad and desktop
+  useGesture(
+    {
+      onDragStart: () => {
+        panStartRef.current = { x: microscopeState.panX, y: microscopeState.panY };
+      },
+      onDrag: ({ offset: [mx, my], pinching, event }) => {
+        if (pinching) return;
+        event.preventDefault();
+        setMicroscopeState(prev => ({
+          ...prev,
+          panX: panStartRef.current.x + mx,
+          panY: panStartRef.current.y + my
+        }));
+      },
+      onPinchStart: () => {
+        pinchStartZoomRef.current = microscopeState.zoom;
+      },
+      onPinch: ({ origin: [cx, cy], offset: [scale], pinching, event }) => {
+        event.preventDefault();
+        if (!canvasRef.current) return;
+        const rect = canvasRef.current.getBoundingClientRect();
+        const clientX = cx - rect.left;
+        const clientY = cy - rect.top;
+        const width = canvasRef.current.width;
+        const height = canvasRef.current.height;
 
-    if (!canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
+        const oldZoom = microscopeState.zoom;
+        const newZoom = Math.min(Math.max(scale, 1.0), 5.0);
 
-    const width = canvasRef.current.width;
-    const height = canvasRef.current.height;
-    
-    const worldX = (clickX - width / 2 - microscopeState.panX) / microscopeState.zoom + width / 2;
-    const worldY = (clickY - height / 2 - microscopeState.panY) / microscopeState.zoom + height / 2;
+        const worldX = (clientX - width / 2 - microscopeState.panX) / oldZoom + width / 2;
+        const worldY = (clientY - height / 2 - microscopeState.panY) / oldZoom + height / 2;
 
-    if (selectedCellType === 'plant' && plantRendererRef.current) {
-      const clickedStructId = plantRendererRef.current.getStructureAt(worldX, worldY, width, height);
-      if (clickedStructId) {
-        setSelectedPlantStructure(clickedStructId);
-        if (BIOLOGICAL_DATABASE[clickedStructId]) {
-          setOrganelleBio(BIOLOGICAL_DATABASE[clickedStructId]);
-          setSelectedOrganelle({
-            id: clickedStructId,
-            type: 'cytoplasm',
-            name: BIOLOGICAL_DATABASE[clickedStructId].name,
-            description: BIOLOGICAL_DATABASE[clickedStructId].function,
-            x: worldX,
-            y: worldY,
-            radius: 30
-          });
+        const newPanX = clientX - width / 2 - (worldX - width / 2) * newZoom;
+        const newPanY = clientY - height / 2 - (worldY - height / 2) * newZoom;
+
+        setMicroscopeState(prev => ({
+          ...prev,
+          zoom: newZoom,
+          panX: newPanX,
+          panY: newPanY
+        }));
+      },
+      onWheel: ({ offset: [, dy], event }) => {
+        event.preventDefault();
+        if (!canvasRef.current) return;
+        const rect = canvasRef.current.getBoundingClientRect();
+        const mouseX = (event as WheelEvent).clientX - rect.left;
+        const mouseY = (event as WheelEvent).clientY - rect.top;
+        const width = canvasRef.current.width;
+        const height = canvasRef.current.height;
+
+        const zoomFactor = dy < 0 ? 1.15 : 0.85;
+        const oldZoom = microscopeState.zoom;
+        const newZoom = Math.min(Math.max(oldZoom * zoomFactor, 1.0), 5.0);
+
+        const worldX = (mouseX - width / 2 - microscopeState.panX) / oldZoom + width / 2;
+        const worldY = (mouseY - height / 2 - microscopeState.panY) / oldZoom + height / 2;
+
+        const newPanX = mouseX - width / 2 - (worldX - width / 2) * newZoom;
+        const newPanY = mouseY - height / 2 - (worldY - height / 2) * newZoom;
+
+        setMicroscopeState(prev => ({
+          ...prev,
+          zoom: newZoom,
+          panX: newPanX,
+          panY: newPanY
+        }));
+      },
+      onClick: ({ event }) => {
+        if (!canvasRef.current) return;
+        const rect = canvasRef.current.getBoundingClientRect();
+        const clickX = (event as MouseEvent).clientX - rect.left;
+        const clickY = (event as MouseEvent).clientY - rect.top;
+
+        const width = canvasRef.current.width;
+        const height = canvasRef.current.height;
+        
+        const worldX = (clickX - width / 2 - microscopeState.panX) / microscopeState.zoom + width / 2;
+        const worldY = (clickY - height / 2 - microscopeState.panY) / microscopeState.zoom + height / 2;
+
+        if (selectedCellType === 'plant' && plantRendererRef.current) {
+          const clickedStructId = plantRendererRef.current.getStructureAt(worldX, worldY, width, height);
+          if (clickedStructId) {
+            setSelectedPlantStructure(clickedStructId);
+            if (BIOLOGICAL_DATABASE[clickedStructId]) {
+              setOrganelleBio(BIOLOGICAL_DATABASE[clickedStructId]);
+              setSelectedOrganelle({
+                id: clickedStructId,
+                type: 'cytoplasm',
+                name: BIOLOGICAL_DATABASE[clickedStructId].name,
+                description: BIOLOGICAL_DATABASE[clickedStructId].function,
+                x: worldX,
+                y: worldY,
+                radius: 30
+              });
+            }
+            return;
+          }
         }
-        return;
+
+        if (!simulationRef.current) return;
+        const organelle = simulationRef.current.getOrganelleAt(worldX, worldY);
+        setSelectedOrganelle(organelle);
+
+        if (organelle && BIOLOGICAL_DATABASE[organelle.id]) {
+          setOrganelleBio(BIOLOGICAL_DATABASE[organelle.id]);
+        } else if (organelle && organelle.id.startsWith('nuclearPore')) {
+          setOrganelleBio(BIOLOGICAL_DATABASE['nucleus']);
+        } else {
+          setOrganelleBio(null);
+        }
       }
+    },
+    {
+      target: canvasRef,
+      drag: {
+        filterTaps: true,
+        taps: 1
+      },
+      pinch: {
+        scaleBounds: { min: 1.0, max: 5.0 },
+        rubberband: true
+      },
+      wheel: {
+        eventOptions: { passive: false }
+      },
+      eventOptions: { passive: false }
     }
-
-    if (!simulationRef.current) return;
-    const organelle = simulationRef.current.getOrganelleAt(worldX, worldY);
-    setSelectedOrganelle(organelle);
-
-    if (organelle && BIOLOGICAL_DATABASE[organelle.id]) {
-      setOrganelleBio(BIOLOGICAL_DATABASE[organelle.id]);
-    } else if (organelle && organelle.id.startsWith('nuclearPore')) {
-      setOrganelleBio(BIOLOGICAL_DATABASE['nucleus']);
-    } else {
-      setOrganelleBio(null);
-    }
-  };
-
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDragging.current) return;
-    const dx = e.clientX - lastMousePos.current.x;
-    const dy = e.clientY - lastMousePos.current.y;
-    lastMousePos.current = { x: e.clientX, y: e.clientY };
-
-    setMicroscopeState(prev => ({
-      ...prev,
-      panX: prev.panX + dx,
-      panY: prev.panY + dy
-    }));
-  };
-
-  const handleMouseUp = () => {
-    isDragging.current = false;
-  };
-
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.15 : 0.85;
-    setMicroscopeState(prev => ({
-      ...prev,
-      zoom: Math.min(Math.max(prev.zoom * zoomFactor, 1.0), 4.5)
-    }));
-  };
+  );
 
   const handleFocusOrganelle = (orgId: string) => {
     if (!simulationRef.current) return;
@@ -250,14 +259,14 @@ export function App() {
   const pathway = processManager.secretoryPathway;
 
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw', background: '#FAF8F3', fontFamily: 'sans-serif', overflow: 'hidden' }}>
+    <div className="main-app-container" style={{ display: 'flex', height: '100vh', width: '100vw', background: '#FAF8F3', fontFamily: 'sans-serif', overflow: 'hidden', touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}>
       {/* Top-Right Menu Button */}
       <button
         onClick={() => setIsMenuOpen(true)}
         style={{
           position: 'fixed',
           top: 16,
-          right: 380,
+          right: window.innerWidth <= 768 ? 16 : 380,
           background: 'rgba(255, 255, 255, 0.9)',
           backdropFilter: 'blur(8px)',
           border: '1px solid #cbd5e1',
@@ -300,44 +309,63 @@ export function App() {
       <div style={{ flex: 1, position: 'relative', height: '100%' }}>
         <canvas
           ref={canvasRef}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onWheel={handleWheel}
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          onTouchEnd={handleTouchEnd}
           style={{ width: '100%', height: '100%', display: 'block', cursor: 'grab', touchAction: 'none' }}
         />
 
-        {/* Minimal Floating Lens Controls Top/Bottom */}
+        {/* Minimal Floating Lens Controls Top/Bottom with +, -, Reset zoom buttons */}
         <div style={{
           position: 'absolute',
           bottom: 16,
           left: '50%',
           transform: 'translateX(-50%)',
-          background: 'rgba(255, 255, 255, 0.85)',
+          background: 'rgba(255, 255, 255, 0.9)',
           backdropFilter: 'blur(12px)',
           border: '1px solid #cbd5e1',
           padding: '8px 16px',
           borderRadius: '24px',
           display: 'flex',
-          gap: '16px',
+          gap: '12px',
           alignItems: 'center',
           boxShadow: '0 10px 30px rgba(0, 0, 0, 0.1)',
-          zIndex: 10
+          zIndex: 10,
+          flexWrap: 'wrap',
+          justifyContent: 'center',
+          maxWidth: '92vw'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ fontSize: '10px', color: '#64748b', textTransform: 'uppercase' }}>Фокус</span>
-            <input
-              type="range"
-              min="-1"
-              max="1"
-              step="0.05"
-              value={microscopeState.focusZ}
-              onChange={e => setMicroscopeState(prev => ({ ...prev, focusZ: parseFloat(e.target.value) }))}
-              style={{ width: '90px', cursor: 'pointer', accentColor: '#0284c7' }}
-            />
+          {/* Zoom Controls: +, -, Reset */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#f1f5f9', padding: '2px 6px', borderRadius: '16px', border: '1px solid #cbd5e1' }}>
+            <span style={{ fontSize: '10px', color: '#64748b', fontWeight: '600', paddingLeft: '2px' }}>Масштаб:</span>
+            <button
+              onClick={() => {
+                const w = canvasRef.current?.width || 800;
+                const h = canvasRef.current?.height || 600;
+                const newZoom = Math.max(microscopeState.zoom * 0.8, 1.0);
+                setMicroscopeState(prev => ({ ...prev, zoom: newZoom }));
+              }}
+              style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '50%', width: '24px', height: '24px', cursor: 'pointer', fontWeight: 'bold', color: '#0284c7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px' }}
+              title="Уменьшить (-)"
+            >
+              −
+            </button>
+            <button
+              onClick={() => {
+                setMicroscopeState(prev => ({ ...prev, zoom: 1.5, panX: 0, panY: 0 }));
+              }}
+              style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '12px', padding: '2px 8px', cursor: 'pointer', fontWeight: '600', color: '#334155', fontSize: '10px' }}
+              title="Сбросить масштаб"
+            >
+              Сброс
+            </button>
+            <button
+              onClick={() => {
+                const newZoom = Math.min(microscopeState.zoom * 1.25, 5.0);
+                setMicroscopeState(prev => ({ ...prev, zoom: newZoom }));
+              }}
+              style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '50%', width: '24px', height: '24px', cursor: 'pointer', fontWeight: 'bold', color: '#0284c7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px' }}
+              title="Увеличить (+)"
+            >
+              +
+            </button>
           </div>
 
           <div style={{ width: '1px', height: '20px', background: '#cbd5e1' }} />
@@ -391,6 +419,7 @@ export function App() {
       {/* Right Panel: Organelles, Names, Information & Process */}
       <div style={{
         width: '360px',
+        maxWidth: '100vw',
         background: '#ffffff',
         borderLeft: '1px solid #e2e8f0',
         padding: '20px',
